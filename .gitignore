@@ -1,0 +1,25 @@
+# Dependencies
+node_modules/
+
+# Environment & Secrets (NEVER COMMIT)
+.env
+.env.local
+.env.*
+!.env.example
+
+# Service account and sensitive JSON keys
+*firebase-adminsdk*.json
+*serviceAccount*.json
+
+# Temporary / Scratch scripts
+scratch/
+
+# Exclude Mobile App folders (Server repo only)
+toletindia/
+toletindia_admin/
+
+# Logs & System files
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
