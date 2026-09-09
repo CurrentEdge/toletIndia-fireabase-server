@@ -55,8 +55,8 @@ The ToletIndia Firebase Server provides authentication, service bookings, dynami
 | Role | Description | Permissions |
 | :--- | :--- | :--- |
 | **`customer`** | Normal customer/user | Create bookings, view own bookings, cancel own bookings, preview coupons. |
-| **`admin`** | System administrator | All customer permissions + create coupons, deactivate coupons, view all bookings, mark bookings completed. |
-| **`provider`** | Service technician / provider | Complete assigned service bookings, view assigned jobs. |
+| **`admin`** | System administrator | All customer permissions + create coupons, deactivate coupons, view all bookings, mark bookings completed, manage service hubs, confirm payments. |
+| **`technician`** | Service technician | Complete assigned service bookings, collect doorstep cash or verify UPI payment, view assigned jobs. |
 
 ### 1.3 HTTP Headers
 
@@ -623,7 +623,28 @@ Deactivates a coupon. Once deactivated, the coupon code becomes eligible for rec
 
 ### 3.4 Payment Endpoints (`/api/payments`)
 
-All services use a post-service payment model where `paymentStatus` remains `"pending"` upon service completion. Payments are resolved either online via Razorpay or offline as Cash collected by the technician.
+All services use a post-service payment model where `paymentStatus` remains `"pending"` upon service completion. Payments are resolved either online via Razorpay/UPI or offline as Cash/online collected at the doorstep by the technician.
+
+---
+
+#### `GET /api/payments/upi-details/:bookingId`
+Fetches dynamically generated NPCI compliant UPI details (amount, payee VPA, and `upi://pay` URI) for an outstanding or completed booking. Allows customers to scan QR or launch UPI apps (Google Pay, PhonePe, Paytm).
+
+- **Access**: Authenticated (`customer`, `admin`, `technician`)
+- **Headers**: `Authorization: Bearer <ID_TOKEN>`
+- **Response (200 OK)**:
+```json
+{
+  "bookingId": "bk_789xyz",
+  "bookingNumber": "BK-2026-001",
+  "amount": 1298,
+  "upiId": "toletindia@upi",
+  "payeeName": "Tolet India",
+  "transactionNote": "Booking BK-2026-001",
+  "upiUri": "upi://pay?pa=toletindia@upi&pn=Tolet%20India&am=1298.00&tn=Booking%20BK-2026-001&cu=INR",
+  "isPaid": false
+}
+```
 
 ---
 
@@ -654,17 +675,20 @@ Creates a Razorpay order for online checkout of a completed booking or confirmed
 ---
 
 #### `POST /api/payments/cash-collection`
-Called by the technician (`provider`) or `admin` when receiving payment in cash at the doorstep. Atomically creates a payment record and marks the booking as `"paid"`.
+Called by the assigned `technician` or `admin` when receiving payment in cash or verifying online UPI transfer at the doorstep. Atomically creates a payment record and marks the booking as `"paid"`.
 
-- **Access**: Admin or Provider (`role: "admin"` or `role: "provider"`)
+- **Access**: Admin or Assigned Technician (`role: "admin"` or `role: "technician"` assigned to this booking)
 - **Headers**: `Authorization: Bearer <TOKEN>`
 - **Request Body**:
 ```json
 {
   "bookingId": "bk_789xyz",
+  "method": "cash",
   "notes": "Collected ₹1298 cash from customer at doorstep"
 }
 ```
+> **Note**: `method` can be `"cash"` or `"online"`.
+
 - **Response (200 OK)**:
 ```json
 {
@@ -700,7 +724,7 @@ Webhook endpoint called asynchronously by Razorpay when payment succeeds (`payme
 #### `GET /api/payments/booking/:bookingId`
 Retrieves all payment transactions associated with a booking.
 
-- **Access**: Authenticated (`customer`, `admin`, `provider`)
+- **Access**: Authenticated (`customer`, `admin`, `technician`)
 - **Headers**: `Authorization: Bearer <ID_TOKEN>`
 - **Response (200 OK)**:
 ```json
@@ -715,7 +739,7 @@ Retrieves all payment transactions associated with a booking.
       "currency": "INR",
       "method": "cash",
       "status": "paid",
-      "collectedBy": "tech_prov_888",
+      "collectedBy": "tech_888",
       "createdAt": "2026-09-02T13:30:00.000Z"
     }
   ]
@@ -724,7 +748,69 @@ Retrieves all payment transactions associated with a booking.
 
 ---
 
-### 3.5 System Endpoints
+### 3.5 Location Endpoints (`/api/location`)
+
+Proxies Google Places API (New) calls through the backend server, ensuring that the Google Cloud Places API key is protected from client bundles and can be restricted to the server's IP address.
+
+---
+
+#### `GET /api/location/places-autocomplete`
+Fetches autocomplete place suggestions using Google Places API (New) (`https://places.googleapis.com/v1/places:autocomplete`).
+
+- **Access**: Public
+- **Query Parameters**:
+  - `input` (required, string): Search query (e.g. `Payyoli`, `Warangal`)
+- **Example Request**:
+  ```http
+  GET /api/location/places-autocomplete?input=Payyoli
+  ```
+- **Response (200 OK)**:
+```json
+{
+  "count": 5,
+  "predictions": [
+    {
+      "placeId": "ChIJ9Z6teFKPpjsRUCF9KKEzvow",
+      "primaryText": "Payyoli",
+      "secondaryText": "Kerala, India",
+      "fullText": "Payyoli, Kerala, India"
+    },
+    {
+      "placeId": "ChIJE_7Dxm-PpjsRGZOZsi3TRSQ",
+      "primaryText": "Payyoli Bus Stand",
+      "secondaryText": "National Highway 66, Payyoli, Kerala, India",
+      "fullText": "Payyoli Bus Stand, National Highway 66, Payyoli, Kerala, India"
+    }
+  ]
+}
+```
+
+---
+
+#### `GET /api/location/place-details/:placeId`
+Fetches exact geographical coordinates (`latitude`, `longitude`) and formatted address using Google Places API (New) Details (`https://places.googleapis.com/v1/places/{placeId}`).
+
+- **Access**: Public
+- **URL Parameters**:
+  - `placeId` (required, string): Google Place identifier
+- **Example Request**:
+  ```http
+  GET /api/location/place-details/ChIJ9Z6teFKPpjsRUCF9KKEzvow
+  ```
+- **Response (200 OK)**:
+```json
+{
+  "placeId": "ChIJ9Z6teFKPpjsRUCF9KKEzvow",
+  "name": "Payyoli",
+  "formattedAddress": "Payyoli, Kerala 673522, India",
+  "latitude": 11.5156462,
+  "longitude": 75.6202619
+}
+```
+
+---
+
+### 3.6 System Endpoints
 
 #### `GET /health`
 Health-check endpoint to verify server availability.
