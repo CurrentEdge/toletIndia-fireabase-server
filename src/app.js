@@ -24,6 +24,17 @@ app.use(
     })
 );
 
+// CORS Middleware
+app.use((req, res, next) => {
+    res.header("Access-Control-Allow-Origin", "*");
+    res.header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
+    res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept, Authorization, x-api-key");
+    if (req.method === "OPTIONS") {
+        return res.sendStatus(200);
+    }
+    next();
+});
+
 // API Routes
 app.use("/api/auth", authRoutes);
 app.use("/api/bookings", bookingRoutes);
@@ -33,9 +44,15 @@ app.use("/api/admin/users", adminUserRoutes);
 app.use("/api/service-areas", serviceAreaRoutes);
 app.use("/api/location", locationRoutes);
 
+// Root & Health Check
+app.get("/", (req, res) => {
+    return res.status(200).json({
+        status: "online",
+        service: "ToletIndia Backend API",
+        version: "1.0.0",
+    });
+});
 
-
-// Health Check
 app.get("/health", (req, res) => {
     return res.status(200).json({
         message: "server is running",
