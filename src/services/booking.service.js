@@ -569,9 +569,11 @@ export const cancelBooking = async ({ bookingId, userId = null, userRole = "cust
                 items: [],
                 subTotal: visitFee,
                 adjustment: 0,
+                adjustedTotal: visitFee,
                 discount: 0,
-                total: visitFee,
+                grandTotal: visitFee,
                 coupon: null,
+                paymentStatus: "pending",
             };
             updateData.paymentStatus = "pending";
         }
