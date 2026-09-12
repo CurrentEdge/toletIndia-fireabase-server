@@ -175,3 +175,194 @@ export const createCustomerUserController = async (req, res) => {
         },
     });
 };
+
+/**
+ * Controller to create a new technician or upgrade an existing user to technician.
+ * Accessible only by Admins.
+ */
+export const createTechnicianUserController = async (req, res) => {
+    const { phoneNumber, name, fullName, email, address, availableServiceIds, isActive } = req.body || {};
+    const technicianName = (fullName || name || "").trim();
+
+    if (!phoneNumber || typeof phoneNumber !== "string" || !/^\+?[0-9]{10,15}$/.test(phoneNumber.trim())) {
+        throw new AppError("phoneNumber is required and must be a valid 10-15 digit phone number", 400);
+    }
+
+    if (!technicianName) {
+        throw new AppError("Full name (fullName) is required for technician registration", 400);
+    }
+
+    const e164Phone = formatE164PhoneNumber(phoneNumber.trim());
+    const usersRef = db.collection("users");
+
+    // 1. Check if user already exists in Firebase Auth
+    let authUser = null;
+    try {
+        authUser = await auth.getUserByPhoneNumber(e164Phone);
+    } catch (e) {
+        if (e.code !== "auth/user-not-found") {
+            throw new AppError(`Firebase Auth verification failed: ${e.message}`, 500);
+        }
+    }
+
+    const validServices = Array.isArray(availableServiceIds) ? availableServiceIds : [];
+    const activeStatus = isActive !== false;
+
+    if (!authUser) {
+        // Create new Firebase Auth user
+        const createParams = {
+            phoneNumber: e164Phone,
+            displayName: technicianName,
+        };
+        if (email && typeof email === "string" && email.trim()) {
+            createParams.email = email.trim();
+        }
+
+        try {
+            authUser = await auth.createUser(createParams);
+        } catch (err) {
+            console.error("Failed to create Firebase Auth technician:", err);
+            throw new AppError(`Failed to create technician account: ${err.message}`, 400);
+        }
+
+        // Create new Firestore user record with technicianProfile
+        const dicebearAvatarUrl = `https://api.dicebear.com/7.x/avataaars/png?seed=${encodeURIComponent(authUser.uid)}`;
+        const userProfile = {
+            uid: authUser.uid,
+            phoneNumber: e164Phone,
+            displayName: technicianName,
+            email: email && typeof email === "string" ? email.trim() : "",
+            address: address && typeof address === "string" ? address.trim() : "",
+            avatarUrl: dicebearAvatarUrl,
+            roles: [ROLES.TECHNICIAN],
+            technicianProfile: {
+                fullName: technicianName,
+                isActive: activeStatus,
+                availableServiceIds: validServices,
+                address: address && typeof address === "string" ? address.trim() : "",
+                createdAt: FieldValue.serverTimestamp(),
+                updatedAt: FieldValue.serverTimestamp(),
+            },
+            createdAt: FieldValue.serverTimestamp(),
+            updatedAt: FieldValue.serverTimestamp(),
+        };
+
+        await usersRef.doc(authUser.uid).set(userProfile);
+
+        return res.status(201).json({
+            message: "Technician created successfully",
+            user: {
+                uid: authUser.uid,
+                phoneNumber: e164Phone,
+                displayName: userProfile.displayName,
+                email: userProfile.email,
+                roles: userProfile.roles,
+                technicianProfile: {
+                    fullName: technicianName,
+                    isActive: activeStatus,
+                    availableServiceIds: validServices,
+                    address: userProfile.address,
+                },
+            },
+        });
+    } else {
+        // Firebase Auth user already exists - check Firestore record
+        const userDoc = await usersRef.doc(authUser.uid).get();
+
+        if (userDoc.exists) {
+            const data = userDoc.data() || {};
+            const currentRoles = Array.isArray(data.roles) ? data.roles : [];
+
+            if (currentRoles.includes(ROLES.TECHNICIAN) && data.technicianProfile) {
+                throw new AppError(
+                    `Technician profile already exists for phone number ${e164Phone}.`,
+                    409
+                );
+            }
+
+            // Upgrade existing user to include technician role & technicianProfile
+            const updates = {
+                roles: FieldValue.arrayUnion(ROLES.TECHNICIAN),
+                technicianProfile: {
+                    fullName: technicianName || data.displayName || data.name || "",
+                    isActive: activeStatus,
+                    availableServiceIds: validServices,
+                    address: address && typeof address === "string" ? address.trim() : (data.address || ""),
+                    createdAt: FieldValue.serverTimestamp(),
+                    updatedAt: FieldValue.serverTimestamp(),
+                },
+                updatedAt: FieldValue.serverTimestamp(),
+            };
+
+            if (email && typeof email === "string" && email.trim() && !data.email) {
+                updates.email = email.trim();
+            }
+            if (technicianName && !data.displayName) {
+                updates.displayName = technicianName;
+            }
+            if (address && typeof address === "string" && address.trim() && !data.address) {
+                updates.address = address.trim();
+            }
+
+            await usersRef.doc(authUser.uid).update(updates);
+
+            return res.status(200).json({
+                message: "User upgraded to technician successfully",
+                user: {
+                    uid: authUser.uid,
+                    phoneNumber: e164Phone,
+                    displayName: updates.displayName || data.displayName || technicianName,
+                    email: updates.email || data.email || "",
+                    roles: Array.from(new Set([...currentRoles, ROLES.TECHNICIAN])),
+                    technicianProfile: {
+                        fullName: technicianName,
+                        isActive: activeStatus,
+                        availableServiceIds: validServices,
+                        address: address || data.address || "",
+                    },
+                },
+            });
+        } else {
+            // User doc missing in Firestore -> Create it
+            const dicebearAvatarUrl = `https://api.dicebear.com/7.x/avataaars/png?seed=${encodeURIComponent(authUser.uid)}`;
+            const userProfile = {
+                uid: authUser.uid,
+                phoneNumber: e164Phone,
+                displayName: technicianName || authUser.displayName || "",
+                email: email && typeof email === "string" ? email.trim() : (authUser.email || ""),
+                address: address && typeof address === "string" ? address.trim() : "",
+                avatarUrl: authUser.photoURL || dicebearAvatarUrl,
+                roles: [ROLES.TECHNICIAN],
+                technicianProfile: {
+                    fullName: technicianName,
+                    isActive: activeStatus,
+                    availableServiceIds: validServices,
+                    address: address && typeof address === "string" ? address.trim() : "",
+                    createdAt: FieldValue.serverTimestamp(),
+                    updatedAt: FieldValue.serverTimestamp(),
+                },
+                createdAt: FieldValue.serverTimestamp(),
+                updatedAt: FieldValue.serverTimestamp(),
+            };
+
+            await usersRef.doc(authUser.uid).set(userProfile);
+
+            return res.status(201).json({
+                message: "Technician profile created for existing auth user",
+                user: {
+                    uid: authUser.uid,
+                    phoneNumber: e164Phone,
+                    displayName: userProfile.displayName,
+                    email: userProfile.email,
+                    roles: userProfile.roles,
+                    technicianProfile: {
+                        fullName: technicianName,
+                        isActive: activeStatus,
+                        availableServiceIds: validServices,
+                        address: userProfile.address,
+                    },
+                },
+            });
+        }
+    }
+};

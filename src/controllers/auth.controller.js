@@ -1,7 +1,7 @@
-import axios from "axios";
 import {
     createAuthToken,
     getOrCreateFirebaseAuthUser,
+    formatE164PhoneNumber,
 } from "../services/auth.service.js";
 
 import { sendOtpSms, validateOtp } from "../services/otp.service.js";
@@ -39,6 +39,33 @@ export const verifyOtp = async (req, res) => {
 
     // 1. Validate OTP with SMS service
     const verifiedPhone = await validateOtp(code, verificationId);
+
+    // If targetRole is technician, verify that an account already exists in Firebase Auth & Firestore
+    if (targetRole === ROLES.TECHNICIAN) {
+        const formattedPhone = formatE164PhoneNumber(verifiedPhone);
+        let existingAuthUser = null;
+        try {
+            existingAuthUser = await auth.getUserByPhoneNumber(formattedPhone);
+        } catch (e) {
+            if (e.code === "auth/user-not-found") {
+                throw new AppError("Your account not found.", 404);
+            }
+            throw new AppError(`Authentication check failed: ${e.message}`, 500);
+        }
+
+        if (!existingAuthUser) {
+            throw new AppError("Your account not found.", 404);
+        }
+
+        const userDoc = await db.collection("users").doc(existingAuthUser.uid).get();
+        if (!userDoc.exists) {
+            throw new AppError("Your account not found.", 404);
+        }
+        const roles = Array.isArray(userDoc.data()?.roles) ? userDoc.data().roles : [];
+        if (!roles.includes(ROLES.TECHNICIAN)) {
+            throw new AppError("Your account not found.", 404);
+        }
+    }
 
     // 2. Get or create Firebase Auth user and ensure Firestore profile has targetRole
     const user = await getOrCreateFirebaseAuthUser(verifiedPhone, targetRole);
